@@ -1,0 +1,5 @@
+# Generated requirements for VectorWave Dashboard
+streamlit>=1.30
+pandas>=2.2
+vectorwave>=0.1.0
+# Add any additional dependencies your project uses
