@@ -189,7 +189,7 @@ function FunctionCard({ func, isSelected, onClick }: FunctionCardProps) {
 }
 
 // ============ Main Page Component ============
-export default function HealerPage() {
+export default function Page() {
   const [timeRange, setTimeRange] = useState(1440);
   const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
   const [selectedFunctions, setSelectedFunctions] = useState<string[]>([]);

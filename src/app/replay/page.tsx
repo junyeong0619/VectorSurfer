@@ -253,7 +253,7 @@ function FunctionCard({ func, isSelected, onClick }: FunctionCardProps) {
 }
 
 // ============ Main Page Component ============
-export default function ReplayPage() {
+export default function Page() {
   const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
   const [testLimit, setTestLimit] = useState(10);
   const [testMode, setTestMode] = useState<TestMode>('exact');
