@@ -26,16 +26,17 @@ export interface TimeRange {
 export interface DashboardState {
     // 시간 범위
     timeRange: TimeRange;
+    // 계산된 시간 범위 (분 단위) - 반응성을 위해 상태로 관리
+    timeRangeMinutes: number;
+    // 시간 범위 라벨
+    timeRangeLabel: string;
+    
     setTimeRangePreset: (minutes: number) => void;
     setTimeRangeCustom: (start: Date, end: Date) => void;
 
     // 차트 스타일
     fillMode: FillMode;
     setFillMode: (mode: FillMode) => void;
-
-    // 계산된 값들
-    getTimeRangeMinutes: () => number;
-    getTimeRangeLabel: () => string;
 }
 
 // ============ 프리셋 옵션 ============
@@ -51,81 +52,90 @@ export const TIME_RANGE_PRESETS = [
     { value: 10080, label: '7일' },
 ];
 
+// ============ Helper Functions ============
+function calculateTimeRangeMinutes(timeRange: TimeRange): number {
+    if (timeRange.mode === 'preset' && timeRange.preset) {
+        return timeRange.preset;
+    }
+    if (timeRange.mode === 'custom' && timeRange.customStart && timeRange.customEnd) {
+        const diffMs = timeRange.customEnd.getTime() - timeRange.customStart.getTime();
+        return Math.floor(diffMs / (1000 * 60));
+    }
+    return 1440; // 기본값 24시간
+}
+
+function calculateTimeRangeLabel(timeRange: TimeRange): string {
+    if (timeRange.mode === 'preset' && timeRange.preset) {
+        const preset = TIME_RANGE_PRESETS.find(p => p.value === timeRange.preset);
+        return preset?.label || `${timeRange.preset}분`;
+    }
+    if (timeRange.mode === 'custom' && timeRange.customStart && timeRange.customEnd) {
+        const formatDate = (d: Date) =>
+            d.toLocaleDateString('ko-KR', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        return `${formatDate(timeRange.customStart)} ~ ${formatDate(timeRange.customEnd)}`;
+    }
+    return '24시간';
+}
+
 // ============ Store ============
 export const useDashboardStore = create<DashboardState>()(
     persist(
-        (set, get) => ({
-            // 초기값
-            timeRange: {
+        (set) => {
+            const defaultTimeRange: TimeRange = {
                 preset: 1440, // 24시간
                 customStart: null,
                 customEnd: null,
                 mode: 'preset',
-            },
-            fillMode: 'gradient',
+            };
 
-            // 프리셋 시간 범위 설정
-            setTimeRangePreset: (minutes: number) => {
-                set({
-                    timeRange: {
+            return {
+                // 초기값
+                timeRange: defaultTimeRange,
+                timeRangeMinutes: calculateTimeRangeMinutes(defaultTimeRange),
+                timeRangeLabel: calculateTimeRangeLabel(defaultTimeRange),
+                fillMode: 'gradient',
+
+                // 프리셋 시간 범위 설정
+                setTimeRangePreset: (minutes: number) => {
+                    const newTimeRange: TimeRange = {
                         preset: minutes,
                         customStart: null,
                         customEnd: null,
                         mode: 'preset',
-                    },
-                });
-            },
+                    };
+                    set({
+                        timeRange: newTimeRange,
+                        timeRangeMinutes: calculateTimeRangeMinutes(newTimeRange),
+                        timeRangeLabel: calculateTimeRangeLabel(newTimeRange),
+                    });
+                },
 
-            // 커스텀 시간 범위 설정
-            setTimeRangeCustom: (start: Date, end: Date) => {
-                set({
-                    timeRange: {
+                // 커스텀 시간 범위 설정
+                setTimeRangeCustom: (start: Date, end: Date) => {
+                    const newTimeRange: TimeRange = {
                         preset: null,
                         customStart: start,
                         customEnd: end,
                         mode: 'custom',
-                    },
-                });
-            },
+                    };
+                    set({
+                        timeRange: newTimeRange,
+                        timeRangeMinutes: calculateTimeRangeMinutes(newTimeRange),
+                        timeRangeLabel: calculateTimeRangeLabel(newTimeRange),
+                    });
+                },
 
-            // 차트 스타일 설정
-            setFillMode: (mode: FillMode) => {
-                set({ fillMode: mode });
-            },
-
-            // 분 단위로 시간 범위 가져오기
-            getTimeRangeMinutes: () => {
-                const { timeRange } = get();
-                if (timeRange.mode === 'preset' && timeRange.preset) {
-                    return timeRange.preset;
-                }
-                if (timeRange.mode === 'custom' && timeRange.customStart && timeRange.customEnd) {
-                    const diffMs = timeRange.customEnd.getTime() - timeRange.customStart.getTime();
-                    return Math.floor(diffMs / (1000 * 60));
-                }
-                return 1440; // 기본값 24시간
-            },
-
-            // 시간 범위 라벨 가져오기
-            getTimeRangeLabel: () => {
-                const { timeRange } = get();
-                if (timeRange.mode === 'preset' && timeRange.preset) {
-                    const preset = TIME_RANGE_PRESETS.find(p => p.value === timeRange.preset);
-                    return preset?.label || `${timeRange.preset}분`;
-                }
-                if (timeRange.mode === 'custom' && timeRange.customStart && timeRange.customEnd) {
-                    const formatDate = (d: Date) =>
-                        d.toLocaleDateString('ko-KR', {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                        });
-                    return `${formatDate(timeRange.customStart)} ~ ${formatDate(timeRange.customEnd)}`;
-                }
-                return '24시간';
-            },
-        }),
+                // 차트 스타일 설정
+                setFillMode: (mode: FillMode) => {
+                    set({ fillMode: mode });
+                },
+            };
+        },
         {
             name: 'vectorsurfer-dashboard',
             // Date 객체 직렬화 처리
@@ -140,6 +150,11 @@ export const useDashboardStore = create<DashboardState>()(
                     }
                     if (parsed.state?.timeRange?.customEnd) {
                         parsed.state.timeRange.customEnd = new Date(parsed.state.timeRange.customEnd);
+                    }
+                    // 계산된 값들 재계산
+                    if (parsed.state?.timeRange) {
+                        parsed.state.timeRangeMinutes = calculateTimeRangeMinutes(parsed.state.timeRange);
+                        parsed.state.timeRangeLabel = calculateTimeRangeLabel(parsed.state.timeRange);
                     }
                     return parsed;
                 },
