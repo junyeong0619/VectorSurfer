@@ -12,7 +12,6 @@ import {
   GitBranch,
   Code2,
   AlertTriangle,
-  RotateCcw,
   Sparkles,
   Settings,
   Waves,
@@ -25,7 +24,6 @@ const navigation = [
   { name: 'Traces', href: '/traces', icon: GitBranch },
   { name: 'Functions', href: '/functions', icon: Code2 },
   { name: 'Errors', href: '/errors', icon: AlertTriangle },
-  { name: 'Replay', href: '/replay', icon: RotateCcw },
   { name: 'Healer', href: '/healer', icon: Sparkles },
 ];
 
