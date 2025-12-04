@@ -3,6 +3,11 @@ Dashboard Overview Service
 
 Provides aggregated statistics and KPIs for the dashboard overview page.
 Based on: test_ex/token_usage_demo.py, test_ex/advanced_search.py
+
+[수정사항]
+- get_kpi_metrics: limit=10000 메모리 집계 → Weaviate Aggregate API 사용
+- get_function_distribution: 동일
+- get_error_code_distribution: 동일
 """
 
 import logging
@@ -14,6 +19,9 @@ from vectorwave.database.db_search import search_executions, get_token_usage_sta
 from vectorwave.models.db_config import get_weaviate_settings
 from vectorwave.utils.status import get_db_status, get_registered_functions
 
+import weaviate.classes.query as wvc_query
+from weaviate.classes.aggregate import GroupByAggregate
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +32,11 @@ class DashboardOverviewService:
 
     def __init__(self):
         self.settings = get_weaviate_settings()
+
+    def _get_execution_collection(self):
+        """Returns the execution collection for aggregate queries."""
+        client = get_cached_client()
+        return client.collections.get(self.settings.EXECUTION_COLLECTION_NAME)
 
     def get_system_status(self) -> Dict[str, Any]:
         """
@@ -57,6 +70,7 @@ class DashboardOverviewService:
     def get_kpi_metrics(self, time_range_minutes: int = 60) -> Dict[str, Any]:
         """
         Returns key performance indicators for the specified time range.
+        [수정] Weaviate Aggregate API 사용하여 DB 레벨에서 집계
         
         Args:
             time_range_minutes: Time range in minutes (default: 60)
@@ -66,30 +80,63 @@ class DashboardOverviewService:
                 "total_executions": int,
                 "success_count": int,
                 "error_count": int,
+                "cache_hit_count": int,
                 "success_rate": float (0-100),
                 "avg_duration_ms": float,
                 "time_range_minutes": int
             }
         """
         try:
-            time_limit = (datetime.now(timezone.utc) - timedelta(minutes=time_range_minutes)).isoformat()
+            collection = self._get_execution_collection()
+            time_limit = (datetime.now(timezone.utc) - timedelta(minutes=time_range_minutes))
             
-            # Get all executions in time range
-            all_executions = search_executions(
-                limit=10000,
-                filters={"timestamp_utc__gte": time_limit},
-                sort_by="timestamp_utc",
-                sort_ascending=False
+            # 시간 필터
+            time_filter = wvc_query.Filter.by_property("timestamp_utc").greater_or_equal(time_limit)
+            
+            # 1. 전체 카운트 (Aggregate)
+            total_result = collection.aggregate.over_all(
+                filters=time_filter,
+                total_count=True
+            )
+            total = total_result.total_count or 0
+            
+            # 2. 상태별 카운트 (Group By Aggregate)
+            status_result = collection.aggregate.over_all(
+                filters=time_filter,
+                group_by=GroupByAggregate(prop="status"),
+                total_count=True
             )
             
-            total = len(all_executions)
-            success_count = sum(1 for e in all_executions if e.get('status') == 'SUCCESS')
-            error_count = sum(1 for e in all_executions if e.get('status') == 'ERROR')
-            cache_hit_count = sum(1 for e in all_executions if e.get('status') == 'CACHE_HIT')
+            success_count = 0
+            error_count = 0
+            cache_hit_count = 0
             
-            # Calculate average duration (excluding cache hits which have 0 duration)
-            durations = [e.get('duration_ms', 0) for e in all_executions if e.get('status') != 'CACHE_HIT']
-            avg_duration = sum(durations) / len(durations) if durations else 0
+            for group in status_result.groups:
+                status_value = group.grouped_by.value
+                count = group.total_count or 0
+                
+                if status_value == "SUCCESS":
+                    success_count = count
+                elif status_value == "ERROR":
+                    error_count = count
+                elif status_value == "CACHE_HIT":
+                    cache_hit_count = count
+            
+            # 3. 평균 duration (SUCCESS만, CACHE_HIT 제외)
+            # Aggregate로 평균 계산
+            from weaviate.classes.aggregate import Metrics
+            
+            duration_result = collection.aggregate.over_all(
+                filters=(
+                    time_filter &
+                    wvc_query.Filter.by_property("status").not_equal("CACHE_HIT")
+                ),
+                return_metrics=Metrics("duration_ms").number(mean=True)
+            )
+            
+            avg_duration = 0.0
+            if duration_result.properties and "duration_ms" in duration_result.properties:
+                avg_duration = duration_result.properties["duration_ms"].mean or 0.0
             
             success_rate = (success_count / total * 100) if total > 0 else 0
             
@@ -152,6 +199,8 @@ class DashboardOverviewService:
     ) -> List[Dict[str, Any]]:
         """
         Returns execution counts grouped by time buckets for timeline charts.
+        [참고] 타임라인은 버킷별로 쿼리해야 해서 Aggregate 최적화가 제한적
+        하지만 각 버킷에서 전체 fetch 대신 count만 가져오도록 개선
         
         Args:
             time_range_minutes: Total time range to query
@@ -169,15 +218,9 @@ class DashboardOverviewService:
             ]
         """
         try:
+            collection = self._get_execution_collection()
             now = datetime.now(timezone.utc)
             time_limit = now - timedelta(minutes=time_range_minutes)
-            
-            all_executions = search_executions(
-                limit=10000,
-                filters={"timestamp_utc__gte": time_limit.isoformat()},
-                sort_by="timestamp_utc",
-                sort_ascending=True
-            )
             
             # Create time buckets
             num_buckets = time_range_minutes // bucket_size_minutes
@@ -187,37 +230,48 @@ class DashboardOverviewService:
                 bucket_start = time_limit + timedelta(minutes=i * bucket_size_minutes)
                 bucket_end = bucket_start + timedelta(minutes=bucket_size_minutes)
                 
-                bucket_data = {
-                    "timestamp": bucket_start.isoformat(),
-                    "success": 0,
-                    "error": 0,
-                    "cache_hit": 0
-                }
+                # 버킷 시간 범위 필터
+                bucket_filter = (
+                    wvc_query.Filter.by_property("timestamp_utc").greater_or_equal(bucket_start) &
+                    wvc_query.Filter.by_property("timestamp_utc").less_than(bucket_end)
+                )
                 
-                for execution in all_executions:
-                    exec_time_str = execution.get('timestamp_utc', '')
-                    if not exec_time_str:
-                        continue
+                # 상태별 집계
+                try:
+                    status_result = collection.aggregate.over_all(
+                        filters=bucket_filter,
+                        group_by=GroupByAggregate(prop="status"),
+                        total_count=True
+                    )
                     
-                    # Parse timestamp (handle both string and datetime)
-                    if isinstance(exec_time_str, str):
-                        try:
-                            exec_time = datetime.fromisoformat(exec_time_str.replace('Z', '+00:00'))
-                        except ValueError:
-                            continue
-                    else:
-                        exec_time = exec_time_str
+                    bucket_data = {
+                        "timestamp": bucket_start.isoformat(),
+                        "success": 0,
+                        "error": 0,
+                        "cache_hit": 0
+                    }
                     
-                    if bucket_start <= exec_time < bucket_end:
-                        status = execution.get('status', '')
-                        if status == 'SUCCESS':
-                            bucket_data['success'] += 1
-                        elif status == 'ERROR':
-                            bucket_data['error'] += 1
-                        elif status == 'CACHE_HIT':
-                            bucket_data['cache_hit'] += 1
-                
-                buckets.append(bucket_data)
+                    for group in status_result.groups:
+                        status_value = group.grouped_by.value
+                        count = group.total_count or 0
+                        
+                        if status_value == "SUCCESS":
+                            bucket_data["success"] = count
+                        elif status_value == "ERROR":
+                            bucket_data["error"] = count
+                        elif status_value == "CACHE_HIT":
+                            bucket_data["cache_hit"] = count
+                    
+                    buckets.append(bucket_data)
+                    
+                except Exception as bucket_error:
+                    logger.warning(f"Failed to aggregate bucket {i}: {bucket_error}")
+                    buckets.append({
+                        "timestamp": bucket_start.isoformat(),
+                        "success": 0,
+                        "error": 0,
+                        "cache_hit": 0
+                    })
             
             return buckets
             
@@ -228,6 +282,7 @@ class DashboardOverviewService:
     def get_function_distribution(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Returns execution count by function name for pie/donut charts.
+        [수정] Weaviate Aggregate Group By 사용
         
         Returns:
             [
@@ -236,31 +291,35 @@ class DashboardOverviewService:
             ]
         """
         try:
-            # Get recent executions
-            all_executions = search_executions(
-                limit=10000,
-                sort_by="timestamp_utc",
-                sort_ascending=False
+            collection = self._get_execution_collection()
+            
+            # Group by function_name
+            result = collection.aggregate.over_all(
+                group_by=GroupByAggregate(prop="function_name"),
+                total_count=True
             )
             
-            # Count by function
-            func_counts: Dict[str, int] = {}
-            for execution in all_executions:
-                func_name = execution.get('function_name', 'unknown')
-                func_counts[func_name] = func_counts.get(func_name, 0) + 1
+            # 결과를 리스트로 변환하고 정렬
+            func_counts = []
+            for group in result.groups:
+                func_name = group.grouped_by.value or "unknown"
+                count = group.total_count or 0
+                func_counts.append({"function_name": func_name, "count": count})
             
-            # Sort by count and limit
-            sorted_funcs = sorted(func_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+            # count 기준 내림차순 정렬 후 limit 적용
+            func_counts.sort(key=lambda x: x["count"], reverse=True)
+            top_funcs = func_counts[:limit]
             
-            total = sum(count for _, count in sorted_funcs)
+            # 퍼센티지 계산
+            total = sum(f["count"] for f in top_funcs)
             
             return [
                 {
-                    "function_name": name,
-                    "count": count,
-                    "percentage": round(count / total * 100, 2) if total > 0 else 0
+                    "function_name": f["function_name"],
+                    "count": f["count"],
+                    "percentage": round(f["count"] / total * 100, 2) if total > 0 else 0
                 }
-                for name, count in sorted_funcs
+                for f in top_funcs
             ]
             
         except Exception as e:
@@ -270,6 +329,7 @@ class DashboardOverviewService:
     def get_error_code_distribution(self, time_range_minutes: int = 1440) -> List[Dict[str, Any]]:
         """
         Returns error count by error_code for the specified time range.
+        [수정] Weaviate Aggregate Group By 사용
         
         Returns:
             [
@@ -278,36 +338,42 @@ class DashboardOverviewService:
             ]
         """
         try:
-            time_limit = (datetime.now(timezone.utc) - timedelta(minutes=time_range_minutes)).isoformat()
+            collection = self._get_execution_collection()
+            time_limit = (datetime.now(timezone.utc) - timedelta(minutes=time_range_minutes))
             
-            error_executions = search_executions(
-                limit=10000,
-                filters={
-                    "status": "ERROR",
-                    "timestamp_utc__gte": time_limit
-                },
-                sort_by="timestamp_utc",
-                sort_ascending=False
+            # 에러만 필터링 + 시간 필터
+            error_filter = (
+                wvc_query.Filter.by_property("status").equal("ERROR") &
+                wvc_query.Filter.by_property("timestamp_utc").greater_or_equal(time_limit)
             )
             
-            # Count by error_code
-            code_counts: Dict[str, int] = {}
-            for execution in error_executions:
-                code = execution.get('error_code', 'UNKNOWN')
-                code_counts[code] = code_counts.get(code, 0) + 1
+            # Group by error_code
+            result = collection.aggregate.over_all(
+                filters=error_filter,
+                group_by=GroupByAggregate(prop="error_code"),
+                total_count=True
+            )
             
-            # Sort by count
-            sorted_codes = sorted(code_counts.items(), key=lambda x: x[1], reverse=True)
+            # 결과를 리스트로 변환
+            code_counts = []
+            for group in result.groups:
+                error_code = group.grouped_by.value or "UNKNOWN"
+                count = group.total_count or 0
+                code_counts.append({"error_code": error_code, "count": count})
             
-            total = sum(count for _, count in sorted_codes)
+            # count 기준 내림차순 정렬
+            code_counts.sort(key=lambda x: x["count"], reverse=True)
+            
+            # 퍼센티지 계산
+            total = sum(c["count"] for c in code_counts)
             
             return [
                 {
-                    "error_code": code,
-                    "count": count,
-                    "percentage": round(count / total * 100, 2) if total > 0 else 0
+                    "error_code": c["error_code"],
+                    "count": c["count"],
+                    "percentage": round(c["count"] / total * 100, 2) if total > 0 else 0
                 }
-                for code, count in sorted_codes
+                for c in code_counts
             ]
             
         except Exception as e:
