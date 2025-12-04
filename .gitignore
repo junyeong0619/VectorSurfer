@@ -1,7 +1,7 @@
 # --- General ---
+.gitignore
 .DS_Store
 *.pem
-.gitignore
 
 # --- Logs ---
 logs
@@ -60,5 +60,6 @@ backend/venv.bak/
 backend/dist/
 backend/build/
 backend/*.egg-info/
-
+backend/app/dashboard/__pycache__/*
 weaviate-data
+/.idea/
