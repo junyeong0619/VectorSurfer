@@ -1,12 +1,3 @@
-/**
- * Healer Page - AI-powered bug diagnosis
- * 
- * [수정사항]
- * 1. 시간 필터 기본값 변경: 0 (All Time) → 1440 (24시간)
- * 2. 진단 실행 중 UI 비활성화 처리 추가
- * 3. [신규] 배치 진단 UI 추가 - 체크박스로 여러 함수 선택 후 일괄 진단
- */
-
 'use client';
 
 import { useState, useMemo } from 'react';
@@ -146,12 +137,12 @@ function DiagnosisCard({ result }: DiagnosisCardProps) {
     );
 }
 
-// ============ [신규] Batch Result Card ============
 interface BatchResultCardProps {
     results: {
         function_name: string;
         status: string;
-        diagnosis_preview: string;
+        diagnosis: string;      // 기존 diagnosis_preview 대신 전체 내용을 받습니다.
+        suggested_fix?: string; // [추가] 수정 제안 코드 필드
     }[];
     succeeded: number;
     failed: number;
@@ -189,11 +180,11 @@ function BatchResultCard({ results, succeeded, failed, total }: BatchResultCardP
             {/* Progress Bar */}
             <div className="h-2 rounded-full bg-muted overflow-hidden mb-4">
                 <div className="h-full flex">
-                    <div 
+                    <div
                         className="bg-green-500 transition-all"
                         style={{ width: `${(succeeded / total) * 100}%` }}
                     />
-                    <div 
+                    <div
                         className="bg-red-500 transition-all"
                         style={{ width: `${(failed / total) * 100}%` }}
                     />
@@ -201,7 +192,7 @@ function BatchResultCard({ results, succeeded, failed, total }: BatchResultCardP
             </div>
 
             {/* Results List */}
-            <div className="space-y-2 max-h-96 overflow-auto">
+            <div className="space-y-2 max-h-96 overflow-auto pr-1">
                 {results.map((result, index) => (
                     <div
                         key={result.function_name}
@@ -226,13 +217,26 @@ function BatchResultCard({ results, succeeded, failed, total }: BatchResultCardP
                                 expandedIndex === index && 'rotate-180'
                             )} />
                         </div>
-                        
-                        {/* Expanded Preview */}
-                        {expandedIndex === index && result.diagnosis_preview && (
-                            <div className="mt-3 pt-3 border-t border-border">
-                                <p className="text-sm text-muted-foreground">
-                                    {result.diagnosis_preview}
+
+                        {/* Expanded Full Diagnosis */}
+                        {expandedIndex === index && (
+                            <div className="mt-3 pt-3 border-t border-border space-y-3">
+                                {/* Diagnosis Text: 전체 내용 표시 및 줄바꿈 적용 */}
+                                <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                                    {result.diagnosis || "No details available."}
                                 </p>
+
+                                {/* [추가] Suggested Fix 코드가 있으면 표시 */}
+                                {result.suggested_fix && (
+                                    <div className="mt-2">
+                                        <div className="flex items-center gap-2 mb-1.5 text-xs font-medium text-primary">
+                                            <Code className="h-3 w-3" />
+                                            Suggested Fix
+                                        </div>
+                                        {/* CodeBlock 컴포넌트 사용 */}
+                                        <CodeBlock code={result.suggested_fix} />
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -256,16 +260,16 @@ interface FilterSectionProps {
 }
 
 function FilterSection({
-    functionFilter,
-    setFunctionFilter,
-    timeRangeFilter,
-    setTimeRangeFilter,
-    errorCodeFilter,
-    setErrorCodeFilter,
-    availableErrorCodes,
-    onClear,
-    disabled = false,
-}: FilterSectionProps) {
+                           functionFilter,
+                           setFunctionFilter,
+                           timeRangeFilter,
+                           setTimeRangeFilter,
+                           errorCodeFilter,
+                           setErrorCodeFilter,
+                           availableErrorCodes,
+                           onClear,
+                           disabled = false,
+                       }: FilterSectionProps) {
     const hasFilters = functionFilter || errorCodeFilter || timeRangeFilter !== 1440;
 
     return (
@@ -388,15 +392,15 @@ interface FunctionCardProps {
     disabled?: boolean;
 }
 
-function FunctionCard({ 
-    func, 
-    isSelected, 
-    isChecked = false,
-    showCheckbox = false,
-    onClick, 
-    onCheckChange,
-    disabled = false 
-}: FunctionCardProps) {
+function FunctionCard({
+                          func,
+                          isSelected,
+                          isChecked = false,
+                          showCheckbox = false,
+                          onClick,
+                          onCheckChange,
+                          disabled = false
+                      }: FunctionCardProps) {
     const handleCheckClick = (e: React.MouseEvent) => {
         e.stopPropagation();
         onCheckChange?.(!isChecked);
@@ -563,14 +567,14 @@ function LoadingOverlay({ mode, count = 1 }: LoadingOverlayProps) {
                         {mode === 'batch' ? 'Batch Diagnosis in Progress' : 'AI Diagnosis in Progress'}
                     </h3>
                     <p className="text-sm text-muted-foreground mt-1">
-                        {mode === 'batch' 
+                        {mode === 'batch'
                             ? `Analyzing ${count} functions in parallel...`
                             : 'Analyzing error patterns and generating fix suggestions...'}
                     </p>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                    {mode === 'batch' 
+                    {mode === 'batch'
                         ? 'This may take several minutes'
                         : 'This may take up to 30 seconds'}
                 </div>
@@ -583,7 +587,7 @@ function LoadingOverlay({ mode, count = 1 }: LoadingOverlayProps) {
 export default function HealerPage() {
     // 모드 상태
     const [mode, setMode] = useState<DiagnosisMode>('single');
-    
+
     // 필터 상태
     const [functionFilter, setFunctionFilter] = useState('');
     const [timeRangeFilter, setTimeRangeFilter] = useState(1440);
@@ -678,7 +682,6 @@ export default function HealerPage() {
         }
     };
 
-    // [신규] Batch 진단 실행
     const handleBatchDiagnose = async () => {
         if (checkedFunctions.size === 0) return;
         setBatchResult(null);
@@ -688,12 +691,14 @@ export default function HealerPage() {
                 functionNames: Array.from(checkedFunctions),
                 lookbackMinutes: lookback,
             });
+
+            // API 응답 매핑 부분
             setBatchResult({
-                // DiagnosisResult[] → BatchResultCardProps['results'] 변환
                 results: result.results.map(r => ({
                     function_name: r.function_name,
                     status: r.status,
-                    diagnosis_preview: r.diagnosis?.slice(0, 100) + (r.diagnosis && r.diagnosis.length > 100 ? '...' : '') || 'No diagnosis available',
+                    diagnosis: r.diagnosis || 'No diagnosis available', // 전체 진단 내용
+                    suggested_fix: r.suggested_fix, // 백엔드에서 받은 수정 코드 전달
                 })),
                 succeeded: result.succeeded,
                 failed: result.failed,
@@ -717,9 +722,9 @@ export default function HealerPage() {
         <div className="space-y-6 p-6">
             {/* Loading Overlay */}
             {isRunning && (
-                <LoadingOverlay 
-                    mode={mode} 
-                    count={mode === 'batch' ? checkedFunctions.size : 1} 
+                <LoadingOverlay
+                    mode={mode}
+                    count={mode === 'batch' ? checkedFunctions.size : 1}
                 />
             )}
 
@@ -735,8 +740,8 @@ export default function HealerPage() {
                     </p>
                 </div>
                 {/* [신규] Mode Selector */}
-                <ModeSelector 
-                    mode={mode} 
+                <ModeSelector
+                    mode={mode}
                     onModeChange={handleModeChange}
                     disabled={isRunning}
                 />
@@ -882,7 +887,7 @@ export default function HealerPage() {
                         <button
                             onClick={mode === 'single' ? handleSingleDiagnose : handleBatchDiagnose}
                             disabled={
-                                isRunning || 
+                                isRunning ||
                                 (mode === 'single' && !selectedFunction) ||
                                 (mode === 'batch' && checkedFunctions.size === 0)
                             }
@@ -895,9 +900,9 @@ export default function HealerPage() {
                             ) : (
                                 <Sparkles className="h-4 w-4" />
                             )}
-                            {isRunning 
-                                ? 'Analyzing...' 
-                                : mode === 'batch' 
+                            {isRunning
+                                ? 'Analyzing...'
+                                : mode === 'batch'
                                     ? `Batch Diagnose (${checkedFunctions.size})`
                                     : 'Diagnose & Heal'}
                         </button>
@@ -915,7 +920,7 @@ export default function HealerPage() {
                                     <Layers className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
                                     <h3 className="font-semibold mb-2">Batch Diagnosis</h3>
                                     <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                                        Select multiple functions using checkboxes and click Batch Diagnose 
+                                        Select multiple functions using checkboxes and click Batch Diagnose
                                         to analyze them all in parallel. Results will show a summary of all diagnoses.
                                     </p>
                                 </>
