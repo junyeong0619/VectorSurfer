@@ -1,10 +1,10 @@
 /**
  * Healer Page - AI-powered bug diagnosis
- * * 개선 사항:
- * - 상단 시간 필터 제거
- * - Functions with Errors에 필터 추가 (함수별, 시간별, 에러별)
- * - Selected Function을 드롭다운으로 변경
- * - 기본 조회 기간을 'All Time'으로 변경
+ * 
+ * [수정사항]
+ * 1. 시간 필터 기본값 변경: 0 (All Time) → 1440 (24시간)
+ * 2. 진단 실행 중 UI 비활성화 처리 추가
+ * 3. [신규] 배치 진단 UI 추가 - 체크박스로 여러 함수 선택 후 일괄 진단
  */
 
 'use client';
@@ -25,10 +25,16 @@ import {
     Search,
     X,
     ChevronDown,
+    Square,
+    CheckSquare,
+    Layers,
 } from 'lucide-react';
-import { useHealableFunctions, useDiagnose } from '@/lib/hooks/useApi';
+import { useHealableFunctions, useDiagnose, useBatchDiagnose } from '@/lib/hooks/useApi';
 import { timeAgo, formatNumber, cn } from '@/lib/utils';
 import type { DiagnosisResult, HealableFunction } from '@/lib/types/api';
+
+// ============ Types ============
+type DiagnosisMode = 'single' | 'batch';
 
 // ============ Code Block with Copy ============
 interface CodeBlockProps {
@@ -67,13 +73,13 @@ function CodeBlock({ code, language = 'typescript' }: CodeBlockProps) {
                 </button>
             </div>
             <pre className="p-4 text-sm overflow-auto max-h-80">
-        <code>{code}</code>
-      </pre>
+                <code>{code}</code>
+            </pre>
         </div>
     );
 }
 
-// ============ Diagnosis Result Card ============
+// ============ Diagnosis Result Card (Single) ============
 interface DiagnosisCardProps {
     result: DiagnosisResult;
 }
@@ -100,7 +106,7 @@ function DiagnosisCard({ result }: DiagnosisCardProps) {
                     <div>
                         <h3 className="font-semibold">Diagnosis Result</h3>
                         <p className="text-xs text-muted-foreground">
-                            Lookback: {result.lookback_minutes} minutes
+                            {result.function_name} • Lookback: {result.lookback_minutes} minutes
                         </p>
                     </div>
                 </div>
@@ -110,9 +116,9 @@ function DiagnosisCard({ result }: DiagnosisCardProps) {
                     result.status === 'no_errors' && 'bg-blue-500/20 text-blue-400',
                     result.status === 'error' && 'bg-red-500/20 text-red-400'
                 )}>
-          {result.status === 'success' ? 'Fix Suggested' :
-              result.status === 'no_errors' ? 'No Errors Found' : 'Analysis Failed'}
-        </span>
+                    {result.status === 'success' ? 'Fix Suggested' :
+                        result.status === 'no_errors' ? 'No Errors Found' : 'Analysis Failed'}
+                </span>
             </div>
 
             {/* Diagnosis */}
@@ -140,6 +146,102 @@ function DiagnosisCard({ result }: DiagnosisCardProps) {
     );
 }
 
+// ============ [신규] Batch Result Card ============
+interface BatchResultCardProps {
+    results: {
+        function_name: string;
+        status: string;
+        diagnosis_preview: string;
+    }[];
+    succeeded: number;
+    failed: number;
+    total: number;
+}
+
+function BatchResultCard({ results, succeeded, failed, total }: BatchResultCardProps) {
+    const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+
+    return (
+        <div className="rounded-2xl border border-border bg-card p-6">
+            {/* Summary Header */}
+            <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                    <Layers className="h-5 w-5 text-primary" />
+                    <div>
+                        <h3 className="font-semibold">Batch Diagnosis Results</h3>
+                        <p className="text-xs text-muted-foreground">
+                            {total} functions analyzed
+                        </p>
+                    </div>
+                </div>
+                <div className="flex items-center gap-3">
+                    <span className="flex items-center gap-1 text-sm">
+                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <span className="text-green-500 font-medium">{succeeded}</span>
+                    </span>
+                    <span className="flex items-center gap-1 text-sm">
+                        <XCircle className="h-4 w-4 text-red-500" />
+                        <span className="text-red-500 font-medium">{failed}</span>
+                    </span>
+                </div>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="h-2 rounded-full bg-muted overflow-hidden mb-4">
+                <div className="h-full flex">
+                    <div 
+                        className="bg-green-500 transition-all"
+                        style={{ width: `${(succeeded / total) * 100}%` }}
+                    />
+                    <div 
+                        className="bg-red-500 transition-all"
+                        style={{ width: `${(failed / total) * 100}%` }}
+                    />
+                </div>
+            </div>
+
+            {/* Results List */}
+            <div className="space-y-2 max-h-96 overflow-auto">
+                {results.map((result, index) => (
+                    <div
+                        key={result.function_name}
+                        className={cn(
+                            'rounded-xl border p-3 transition-all cursor-pointer',
+                            result.status === 'success' && 'border-green-500/30 bg-green-500/5',
+                            result.status === 'no_errors' && 'border-blue-500/30 bg-blue-500/5',
+                            result.status === 'error' && 'border-red-500/30 bg-red-500/5',
+                            expandedIndex === index && 'ring-1 ring-primary'
+                        )}
+                        onClick={() => setExpandedIndex(expandedIndex === index ? null : index)}
+                    >
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                {result.status === 'success' && <Lightbulb className="h-4 w-4 text-green-500" />}
+                                {result.status === 'no_errors' && <CheckCircle className="h-4 w-4 text-blue-500" />}
+                                {result.status === 'error' && <XCircle className="h-4 w-4 text-red-500" />}
+                                <code className="text-sm font-medium">{result.function_name}</code>
+                            </div>
+                            <ChevronDown className={cn(
+                                'h-4 w-4 text-muted-foreground transition-transform',
+                                expandedIndex === index && 'rotate-180'
+                            )} />
+                        </div>
+                        
+                        {/* Expanded Preview */}
+                        {expandedIndex === index && result.diagnosis_preview && (
+                            <div className="mt-3 pt-3 border-t border-border">
+                                <p className="text-sm text-muted-foreground">
+                                    {result.diagnosis_preview}
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 // ============ Filter Section ============
 interface FilterSectionProps {
     functionFilter: string;
@@ -150,23 +252,27 @@ interface FilterSectionProps {
     setErrorCodeFilter: (v: string) => void;
     availableErrorCodes: string[];
     onClear: () => void;
+    disabled?: boolean;
 }
 
 function FilterSection({
-                           functionFilter,
-                           setFunctionFilter,
-                           timeRangeFilter,
-                           setTimeRangeFilter,
-                           errorCodeFilter,
-                           setErrorCodeFilter,
-                           availableErrorCodes,
-                           onClear,
-                       }: FilterSectionProps) {
-    // 기본값이 0(All Time)이므로, 0이 아닐 때만 필터가 적용된 것으로 간주
-    const hasFilters = functionFilter || errorCodeFilter || timeRangeFilter !== 0;
+    functionFilter,
+    setFunctionFilter,
+    timeRangeFilter,
+    setTimeRangeFilter,
+    errorCodeFilter,
+    setErrorCodeFilter,
+    availableErrorCodes,
+    onClear,
+    disabled = false,
+}: FilterSectionProps) {
+    const hasFilters = functionFilter || errorCodeFilter || timeRangeFilter !== 1440;
 
     return (
-        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+        <div className={cn(
+            'rounded-xl border border-border bg-card p-4 space-y-3',
+            disabled && 'opacity-50 pointer-events-none'
+        )}>
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                     <Filter className="h-4 w-4 text-muted-foreground" />
@@ -175,7 +281,8 @@ function FilterSection({
                 {hasFilters && (
                     <button
                         onClick={onClear}
-                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        disabled={disabled}
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed"
                     >
                         <X className="h-3 w-3" />
                         Clear
@@ -192,7 +299,8 @@ function FilterSection({
                         placeholder="Function name..."
                         value={functionFilter}
                         onChange={(e) => setFunctionFilter(e.target.value)}
-                        className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none"
+                        disabled={disabled}
+                        className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted"
                     />
                 </div>
 
@@ -200,21 +308,23 @@ function FilterSection({
                 <select
                     value={timeRangeFilter}
                     onChange={(e) => setTimeRangeFilter(Number(e.target.value))}
-                    className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                    disabled={disabled}
+                    className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted"
                 >
-                    <option value={0}>All Time</option>
                     <option value={60}>Last 1 hour</option>
                     <option value={360}>Last 6 hours</option>
                     <option value={1440}>Last 24 hours</option>
                     <option value={4320}>Last 3 days</option>
                     <option value={10080}>Last 7 days</option>
+                    <option value={0}>⚠️ All Time (may be slow)</option>
                 </select>
 
                 {/* Error Code Filter */}
                 <select
                     value={errorCodeFilter}
                     onChange={(e) => setErrorCodeFilter(e.target.value)}
-                    className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                    disabled={disabled}
+                    className="rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted"
                 >
                     <option value="">All Error Codes</option>
                     {availableErrorCodes.map((code) => (
@@ -226,29 +336,105 @@ function FilterSection({
     );
 }
 
-// ============ Function Card ============
+// ============ [신규] Mode Selector ============
+interface ModeSelectorProps {
+    mode: DiagnosisMode;
+    onModeChange: (mode: DiagnosisMode) => void;
+    disabled?: boolean;
+}
+
+function ModeSelector({ mode, onModeChange, disabled }: ModeSelectorProps) {
+    return (
+        <div className={cn(
+            'flex items-center gap-1 rounded-xl bg-muted p-1',
+            disabled && 'opacity-50 pointer-events-none'
+        )}>
+            <button
+                onClick={() => onModeChange('single')}
+                className={cn(
+                    'flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                    mode === 'single'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                )}
+            >
+                <Sparkles className="h-3 w-3" />
+                Single
+            </button>
+            <button
+                onClick={() => onModeChange('batch')}
+                className={cn(
+                    'flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                    mode === 'batch'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                )}
+            >
+                <Layers className="h-3 w-3" />
+                Batch
+            </button>
+        </div>
+    );
+}
+
+// ============ [수정] Function Card with Checkbox ============
 interface FunctionCardProps {
     func: HealableFunction;
     isSelected: boolean;
+    isChecked?: boolean;
+    showCheckbox?: boolean;
     onClick: () => void;
+    onCheckChange?: (checked: boolean) => void;
+    disabled?: boolean;
 }
 
-function FunctionCard({ func, isSelected, onClick }: FunctionCardProps) {
+function FunctionCard({ 
+    func, 
+    isSelected, 
+    isChecked = false,
+    showCheckbox = false,
+    onClick, 
+    onCheckChange,
+    disabled = false 
+}: FunctionCardProps) {
+    const handleCheckClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onCheckChange?.(!isChecked);
+    };
+
     return (
-        <button
+        <div
             onClick={onClick}
             className={cn(
-                'w-full text-left rounded-xl border p-4 transition-all',
-                isSelected
+                'w-full text-left rounded-xl border p-4 transition-all cursor-pointer',
+                isSelected && !showCheckbox
                     ? 'border-primary bg-primary/5 shadow-md'
-                    : 'border-border bg-card hover:border-primary/50'
+                    : 'border-border bg-card hover:border-primary/50',
+                isChecked && showCheckbox && 'border-primary/50 bg-primary/5',
+                disabled && 'opacity-50 cursor-not-allowed hover:border-border'
             )}
         >
             <div className="flex items-center justify-between mb-2">
-                <code className="text-sm font-semibold truncate">{func.function_name}</code>
+                <div className="flex items-center gap-2">
+                    {/* [신규] Checkbox for batch mode */}
+                    {showCheckbox && (
+                        <button
+                            onClick={handleCheckClick}
+                            disabled={disabled}
+                            className="p-0.5 rounded hover:bg-muted transition-colors"
+                        >
+                            {isChecked ? (
+                                <CheckSquare className="h-5 w-5 text-primary" />
+                            ) : (
+                                <Square className="h-5 w-5 text-muted-foreground" />
+                            )}
+                        </button>
+                    )}
+                    <code className="text-sm font-semibold truncate">{func.function_name}</code>
+                </div>
                 <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400 shrink-0">
-          {formatNumber(func.error_count)} errors
-        </span>
+                    {formatNumber(func.error_count)} errors
+                </span>
             </div>
 
             {/* Error Codes */}
@@ -258,13 +444,13 @@ function FunctionCard({ func, isSelected, onClick }: FunctionCardProps) {
                         key={code}
                         className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
                     >
-            {code}
-          </span>
+                        {code}
+                    </span>
                 ))}
                 {func.error_codes.length > 3 && (
                     <span className="text-xs text-muted-foreground">
-            +{func.error_codes.length - 3} more
-          </span>
+                        +{func.error_codes.length - 3} more
+                    </span>
                 )}
             </div>
 
@@ -272,31 +458,33 @@ function FunctionCard({ func, isSelected, onClick }: FunctionCardProps) {
                 <Clock className="h-3 w-3" />
                 Last error: {timeAgo(func.latest_error_time)}
             </p>
-        </button>
+        </div>
     );
 }
 
-// ============ Function Selector Dropdown ============
+// ============ Function Selector Dropdown (Single Mode) ============
 interface FunctionSelectorProps {
     functions: HealableFunction[];
     selectedFunction: string | null;
     onSelect: (functionName: string | null) => void;
+    disabled?: boolean;
 }
 
-function FunctionSelector({ functions, selectedFunction, onSelect }: FunctionSelectorProps) {
+function FunctionSelector({ functions, selectedFunction, onSelect, disabled = false }: FunctionSelectorProps) {
     const [isOpen, setIsOpen] = useState(false);
-
     const selectedFunc = functions.find(f => f.function_name === selectedFunction);
 
     return (
         <div className="relative">
             <button
-                onClick={() => setIsOpen(!isOpen)}
+                onClick={() => !disabled && setIsOpen(!isOpen)}
+                disabled={disabled}
                 className={cn(
                     'w-full flex items-center justify-between rounded-xl border px-4 py-3 text-left transition-all',
                     selectedFunction
                         ? 'border-primary bg-primary/5'
-                        : 'border-border bg-muted hover:border-primary/50'
+                        : 'border-border bg-muted hover:border-primary/50',
+                    disabled && 'opacity-50 cursor-not-allowed hover:border-border'
                 )}
             >
                 <div className="flex items-center gap-2 min-w-0">
@@ -305,8 +493,8 @@ function FunctionSelector({ functions, selectedFunction, onSelect }: FunctionSel
                             <code className="text-sm font-semibold truncate">{selectedFunction}</code>
                             {selectedFunc && (
                                 <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400 shrink-0">
-                  {formatNumber(selectedFunc.error_count)} errors
-                </span>
+                                    {formatNumber(selectedFunc.error_count)} errors
+                                </span>
                             )}
                         </>
                     ) : (
@@ -319,8 +507,7 @@ function FunctionSelector({ functions, selectedFunction, onSelect }: FunctionSel
                 )} />
             </button>
 
-            {/* Dropdown */}
-            {isOpen && (
+            {isOpen && !disabled && (
                 <div className="absolute z-10 top-full left-0 right-0 mt-2 max-h-64 overflow-auto rounded-xl border border-border bg-card shadow-xl">
                     {functions.length === 0 ? (
                         <div className="p-4 text-center text-sm text-muted-foreground">
@@ -339,13 +526,11 @@ function FunctionSelector({ functions, selectedFunction, onSelect }: FunctionSel
                                     selectedFunction === func.function_name && 'bg-primary/5'
                                 )}
                             >
-                                <div className="flex items-center gap-2 min-w-0">
-                                    <code className="text-sm font-medium truncate">{func.function_name}</code>
-                                </div>
+                                <code className="text-sm font-medium truncate">{func.function_name}</code>
                                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
-                    {formatNumber(func.error_count)}
-                  </span>
+                                    <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
+                                        {formatNumber(func.error_count)}
+                                    </span>
                                     {selectedFunction === func.function_name && (
                                         <Check className="h-4 w-4 text-primary" />
                                     )}
@@ -359,34 +544,77 @@ function FunctionSelector({ functions, selectedFunction, onSelect }: FunctionSel
     );
 }
 
+// ============ Loading Overlay ============
+interface LoadingOverlayProps {
+    mode: DiagnosisMode;
+    count?: number;
+}
+
+function LoadingOverlay({ mode, count = 1 }: LoadingOverlayProps) {
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-4 rounded-2xl border border-border bg-card p-8 shadow-2xl">
+                <div className="relative">
+                    <Loader2 className="h-12 w-12 animate-spin text-primary" />
+                    <Sparkles className="absolute -right-1 -top-1 h-5 w-5 text-primary animate-pulse" />
+                </div>
+                <div className="text-center">
+                    <h3 className="font-semibold text-lg">
+                        {mode === 'batch' ? 'Batch Diagnosis in Progress' : 'AI Diagnosis in Progress'}
+                    </h3>
+                    <p className="text-sm text-muted-foreground mt-1">
+                        {mode === 'batch' 
+                            ? `Analyzing ${count} functions in parallel...`
+                            : 'Analyzing error patterns and generating fix suggestions...'}
+                    </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                    {mode === 'batch' 
+                        ? 'This may take several minutes'
+                        : 'This may take up to 30 seconds'}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ============ Main Page Component ============
 export default function HealerPage() {
-    // 필터 상태 - 기본값 변경 (10080 -> 0)
+    // 모드 상태
+    const [mode, setMode] = useState<DiagnosisMode>('single');
+    
+    // 필터 상태
     const [functionFilter, setFunctionFilter] = useState('');
-    const [timeRangeFilter, setTimeRangeFilter] = useState(0); // 0 = All Time
+    const [timeRangeFilter, setTimeRangeFilter] = useState(1440);
     const [errorCodeFilter, setErrorCodeFilter] = useState('');
 
-    // 진단 설정
+    // Single 모드 상태
     const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
     const [lookback, setLookback] = useState(60);
     const [diagnosis, setDiagnosis] = useState<DiagnosisResult | null>(null);
 
-    // API 호출 - 필터가 적용된 시간 범위로 데이터 가져오기
+    // [신규] Batch 모드 상태
+    const [checkedFunctions, setCheckedFunctions] = useState<Set<string>>(new Set());
+    const [batchResult, setBatchResult] = useState<BatchResultCardProps | null>(null);
+
+    // API 호출
     const { data: functionsData, isLoading } = useHealableFunctions(timeRangeFilter);
     const diagnose = useDiagnose();
+    const batchDiagnose = useBatchDiagnose();
+
+    const isRunning = diagnose.isPending || batchDiagnose.isPending;
 
     // 필터 적용
     const filteredFunctions = useMemo(() => {
         let items = functionsData?.items || [];
 
-        // 함수명 필터
         if (functionFilter) {
             items = items.filter(f =>
                 f.function_name.toLowerCase().includes(functionFilter.toLowerCase())
             );
         }
 
-        // 에러 코드 필터
         if (errorCodeFilter) {
             items = items.filter(f =>
                 f.error_codes.includes(errorCodeFilter)
@@ -396,7 +624,7 @@ export default function HealerPage() {
         return items;
     }, [functionsData, functionFilter, errorCodeFilter]);
 
-    // 사용 가능한 에러 코드 목록
+    // 에러 코드 목록
     const availableErrorCodes = useMemo(() => {
         const codes = new Set<string>();
         (functionsData?.items || []).forEach(f => {
@@ -408,12 +636,34 @@ export default function HealerPage() {
     // 필터 초기화
     const clearFilters = () => {
         setFunctionFilter('');
-        setTimeRangeFilter(0); // Reset to All Time
+        setTimeRangeFilter(1440);
         setErrorCodeFilter('');
     };
 
-    // 진단 실행
-    const handleDiagnose = async () => {
+    // [신규] 체크 토글
+    const handleCheckChange = (functionName: string, checked: boolean) => {
+        setCheckedFunctions(prev => {
+            const next = new Set(prev);
+            if (checked) {
+                next.add(functionName);
+            } else {
+                next.delete(functionName);
+            }
+            return next;
+        });
+    };
+
+    // [신규] 전체 선택/해제
+    const handleSelectAll = () => {
+        if (checkedFunctions.size === filteredFunctions.length) {
+            setCheckedFunctions(new Set());
+        } else {
+            setCheckedFunctions(new Set(filteredFunctions.map(f => f.function_name)));
+        }
+    };
+
+    // Single 진단 실행
+    const handleSingleDiagnose = async () => {
         if (!selectedFunction) return;
         setDiagnosis(null);
 
@@ -428,19 +678,68 @@ export default function HealerPage() {
         }
     };
 
-    const isRunning = diagnose.isPending;
+    // [신규] Batch 진단 실행
+    const handleBatchDiagnose = async () => {
+        if (checkedFunctions.size === 0) return;
+        setBatchResult(null);
+
+        try {
+            const result = await batchDiagnose.mutateAsync({
+                functionNames: Array.from(checkedFunctions),
+                lookbackMinutes: lookback,
+            });
+            setBatchResult({
+                // DiagnosisResult[] → BatchResultCardProps['results'] 변환
+                results: result.results.map(r => ({
+                    function_name: r.function_name,
+                    status: r.status,
+                    diagnosis_preview: r.diagnosis?.slice(0, 100) + (r.diagnosis && r.diagnosis.length > 100 ? '...' : '') || 'No diagnosis available',
+                })),
+                succeeded: result.succeeded,
+                failed: result.failed,
+                total: result.total,
+            });
+        } catch (error) {
+            console.error('Batch diagnosis failed:', error);
+        }
+    };
+
+    // 모드 변경 시 상태 초기화
+    const handleModeChange = (newMode: DiagnosisMode) => {
+        setMode(newMode);
+        setDiagnosis(null);
+        setBatchResult(null);
+        setSelectedFunction(null);
+        setCheckedFunctions(new Set());
+    };
 
     return (
         <div className="space-y-6 p-6">
+            {/* Loading Overlay */}
+            {isRunning && (
+                <LoadingOverlay 
+                    mode={mode} 
+                    count={mode === 'batch' ? checkedFunctions.size : 1} 
+                />
+            )}
+
             {/* Header */}
-            <div>
-                <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-                    <Sparkles className="h-6 w-6 text-primary" />
-                    Healer
-                </h1>
-                <p className="text-muted-foreground">
-                    AI-powered bug diagnosis and fix suggestions
-                </p>
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                        <Sparkles className="h-6 w-6 text-primary" />
+                        Healer
+                    </h1>
+                    <p className="text-muted-foreground">
+                        AI-powered bug diagnosis and fix suggestions
+                    </p>
+                </div>
+                {/* [신규] Mode Selector */}
+                <ModeSelector 
+                    mode={mode} 
+                    onModeChange={handleModeChange}
+                    disabled={isRunning}
+                />
             </div>
 
             <div className="grid gap-6 lg:grid-cols-3">
@@ -449,8 +748,8 @@ export default function HealerPage() {
                     <div className="flex items-center justify-between">
                         <h3 className="font-semibold">Functions with Errors</h3>
                         <span className="text-xs text-muted-foreground">
-              {filteredFunctions.length} of {functionsData?.total || 0}
-            </span>
+                            {filteredFunctions.length} of {functionsData?.total || 0}
+                        </span>
                     </div>
 
                     {/* Filters */}
@@ -463,7 +762,29 @@ export default function HealerPage() {
                         setErrorCodeFilter={setErrorCodeFilter}
                         availableErrorCodes={availableErrorCodes}
                         onClear={clearFilters}
+                        disabled={isRunning}
                     />
+
+                    {/* [신규] Batch 모드: 전체 선택 버튼 */}
+                    {mode === 'batch' && filteredFunctions.length > 0 && (
+                        <button
+                            onClick={handleSelectAll}
+                            disabled={isRunning}
+                            className="w-full flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50"
+                        >
+                            {checkedFunctions.size === filteredFunctions.length ? (
+                                <>
+                                    <Square className="h-4 w-4" />
+                                    Deselect All
+                                </>
+                            ) : (
+                                <>
+                                    <CheckSquare className="h-4 w-4" />
+                                    Select All ({filteredFunctions.length})
+                                </>
+                            )}
+                        </button>
+                    )}
 
                     {/* Function List */}
                     <div className="space-y-2 max-h-[500px] overflow-auto pr-2">
@@ -485,7 +806,17 @@ export default function HealerPage() {
                                     key={func.function_name}
                                     func={func}
                                     isSelected={selectedFunction === func.function_name}
-                                    onClick={() => setSelectedFunction(func.function_name)}
+                                    isChecked={checkedFunctions.has(func.function_name)}
+                                    showCheckbox={mode === 'batch'}
+                                    onClick={() => {
+                                        if (mode === 'single') {
+                                            setSelectedFunction(func.function_name);
+                                        } else {
+                                            handleCheckChange(func.function_name, !checkedFunctions.has(func.function_name));
+                                        }
+                                    }}
+                                    onCheckChange={(checked) => handleCheckChange(func.function_name, checked)}
+                                    disabled={isRunning}
                                 />
                             ))
                         )}
@@ -495,21 +826,42 @@ export default function HealerPage() {
                 {/* Configuration & Results */}
                 <div className="lg:col-span-2 space-y-6">
                     {/* Configuration */}
-                    <div className="rounded-2xl border border-border bg-card p-6">
+                    <div className={cn(
+                        'rounded-2xl border border-border bg-card p-6',
+                        isRunning && 'opacity-50 pointer-events-none'
+                    )}>
                         <h3 className="font-semibold mb-4">Diagnosis Configuration</h3>
 
                         <div className="grid gap-4 md:grid-cols-2 mb-6">
-                            {/* Function Selector Dropdown */}
-                            <div>
-                                <label className="block text-sm font-medium mb-2">
-                                    Selected Function
-                                </label>
-                                <FunctionSelector
-                                    functions={filteredFunctions}
-                                    selectedFunction={selectedFunction}
-                                    onSelect={setSelectedFunction}
-                                />
-                            </div>
+                            {/* Single Mode: Function Selector */}
+                            {mode === 'single' && (
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">
+                                        Selected Function
+                                    </label>
+                                    <FunctionSelector
+                                        functions={filteredFunctions}
+                                        selectedFunction={selectedFunction}
+                                        onSelect={setSelectedFunction}
+                                        disabled={isRunning}
+                                    />
+                                </div>
+                            )}
+
+                            {/* Batch Mode: Selected Count */}
+                            {mode === 'batch' && (
+                                <div>
+                                    <label className="block text-sm font-medium mb-2">
+                                        Selected Functions
+                                    </label>
+                                    <div className="flex items-center gap-2 rounded-xl border border-border bg-muted px-4 py-3">
+                                        <Layers className="h-4 w-4 text-primary" />
+                                        <span className="text-sm font-medium">
+                                            {checkedFunctions.size} functions selected
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Lookback */}
                             <div>
@@ -520,38 +872,63 @@ export default function HealerPage() {
                                     onChange={(e) => setLookback(Number(e.target.value))}
                                     min={5}
                                     max={1440}
-                                    className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm focus:border-primary focus:outline-none"
+                                    disabled={isRunning}
+                                    className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted"
                                 />
                             </div>
                         </div>
 
                         {/* Run Button */}
                         <button
-                            onClick={handleDiagnose}
-                            disabled={!selectedFunction || isRunning}
+                            onClick={mode === 'single' ? handleSingleDiagnose : handleBatchDiagnose}
+                            disabled={
+                                isRunning || 
+                                (mode === 'single' && !selectedFunction) ||
+                                (mode === 'batch' && checkedFunctions.size === 0)
+                            }
                             className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
                         >
                             {isRunning ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : mode === 'batch' ? (
+                                <Layers className="h-4 w-4" />
                             ) : (
                                 <Sparkles className="h-4 w-4" />
                             )}
-                            {isRunning ? 'Analyzing...' : 'Diagnose & Heal'}
+                            {isRunning 
+                                ? 'Analyzing...' 
+                                : mode === 'batch' 
+                                    ? `Batch Diagnose (${checkedFunctions.size})`
+                                    : 'Diagnose & Heal'}
                         </button>
                     </div>
 
                     {/* Results */}
-                    {diagnosis && <DiagnosisCard result={diagnosis} />}
+                    {mode === 'single' && diagnosis && <DiagnosisCard result={diagnosis} />}
+                    {mode === 'batch' && batchResult && <BatchResultCard {...batchResult} />}
 
                     {/* Empty State */}
-                    {!diagnosis && !isRunning && (
+                    {!diagnosis && !batchResult && !isRunning && (
                         <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center">
-                            <Sparkles className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                            <h3 className="font-semibold mb-2">AI-Powered Diagnosis</h3>
-                            <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                                Select a function with errors and click Diagnose &amp; Heal to get
-                                AI-generated insights and fix suggestions based on recent error patterns.
-                            </p>
+                            {mode === 'batch' ? (
+                                <>
+                                    <Layers className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                                    <h3 className="font-semibold mb-2">Batch Diagnosis</h3>
+                                    <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                                        Select multiple functions using checkboxes and click Batch Diagnose 
+                                        to analyze them all in parallel. Results will show a summary of all diagnoses.
+                                    </p>
+                                </>
+                            ) : (
+                                <>
+                                    <Sparkles className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                                    <h3 className="font-semibold mb-2">AI-Powered Diagnosis</h3>
+                                    <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                                        Select a function with errors and click Diagnose &amp; Heal to get
+                                        AI-generated insights and fix suggestions based on recent error patterns.
+                                    </p>
+                                </>
+                            )}
                         </div>
                     )}
                 </div>
